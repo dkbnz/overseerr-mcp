@@ -2341,7 +2341,9 @@ class OverseerrServer {
       res.json(this.cache.getStats());
     });
 
-    app.post('/mcp', async (req: any, res: any) => {
+    let activeTransport: InstanceType<typeof SSEServerTransport> | null = null;
+
+    app.get('/sse', async (req: any, res: any) => {
       // Single-client enforcement: reject if another client is already connected
       if (this.activeSseConnection) {
         res.status(409).set('Retry-After', '5').json({
@@ -2354,28 +2356,39 @@ class OverseerrServer {
       this.activeSseConnection = true;
 
       try {
-        console.error('New MCP connection established');
+        console.error('New SSE connection established');
         const transport = new SSEServerTransport('/message', res);
+        activeTransport = transport;
         await this.server.connect(transport);
       } catch (error) {
-        this.activeSseConnection = false;  // Reset on failure so future connections aren't permanently blocked
+        this.activeSseConnection = false;
+        activeTransport = null;
         console.error('[MCP] Connection error:', error);
         throw error;
       }
 
       req.on('close', () => {
-        console.log('MCP connection closed');
+        console.log('SSE connection closed');
         this.activeSseConnection = false;
+        activeTransport = null;
         this.server.close().catch(err => {
           console.error('[MCP] Error closing server on disconnect:', err);
         });
       });
     });
 
+    app.post('/message', async (req: any, res: any) => {
+      if (!activeTransport) {
+        res.status(400).json({ error: 'No active SSE connection. Connect to /sse first.' });
+        return;
+      }
+      await activeTransport.handlePostMessage(req, res);
+    });
+
     app.listen(port, () => {
       console.error(`Seerr MCP server v${VERSION} running on HTTP port ${port}`);
       console.error(`Supports Seerr and Overseerr (legacy) instances`);
-      console.error(`MCP endpoint: http://localhost:${port}/mcp`);
+      console.error(`SSE endpoint: http://localhost:${port}/sse`);
       console.error(`Health check: http://localhost:${port}/health`);
       console.error(`Cache stats: http://localhost:${port}/cache/stats`);
     });
